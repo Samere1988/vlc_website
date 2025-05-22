@@ -1,212 +1,255 @@
-from flask import Flask, render_template, redirect, url_for, send_from_directory, request, jsonify, session
+import os
+import sqlite3
+import subprocess
+import threading
+import time
+import signal
+from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
+from flask_socketio import SocketIO, emit
 from flask_security import login_required, current_user
 from datetime import datetime, timedelta
 from models import db, Channel, Role, User
 from auth import init_security, user_datastore
-from sqlalchemy import text
-import subprocess, os, signal, os.path
-import logging
-import traceback
 
-
-
-
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+# ─────────────────────────────────────────────────────────────────────────────
+# Flask Setup + Config
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 online_users = {}
 ONLINE_TIMEOUT = timedelta(minutes=1)
+
 app.config['SECRET_KEY'] = 'super-secret-key'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///C:/Users/samer/PycharmProjects/vlc website/channels.db'
 app.config['SECURITY_PASSWORD_SALT'] = 'super-secret-salt'
-
-# Enable registration
 app.config['SECURITY_REGISTERABLE'] = True
 app.config['SECURITY_SEND_REGISTER_EMAIL'] = False
-
-# Custom template paths
 app.config['SECURITY_LOGIN_USER_TEMPLATE'] = 'security/login_user.html'
 app.config['SECURITY_REGISTER_USER_TEMPLATE'] = 'security/register_user.html'
-
-# ✅ Required format for Flask-Security >= 4.0
-app.config['SECURITY_USER_IDENTITY_ATTRIBUTES'] = [
-    {'email': {'mapper': lambda x: x.lower()}}
-]
-
-# Redirects
+app.config['SECURITY_USER_IDENTITY_ATTRIBUTES'] = [{'email': {'mapper': lambda x: x.lower()}}]
 app.config['SECURITY_POST_LOGIN_VIEW'] = '/'
 app.config['SECURITY_POST_LOGOUT_VIEW'] = '/'
 app.config['SECURITY_POST_REGISTER_VIEW'] = '/'
-
-# Debugging (disable in production)
 app.config['SECURITY_DEBUG'] = True
 
-
-
-
-# Initialize DB first
 db.init_app(app)
-
-# Then initialize Flask-Security
 init_security(app)
 
-# === FFMPEG STREAMING ===
-FFMPEG_PROCESS = None
+# ─────────────────────────────────────────────────────────────────────────────
+# IPTV STREAMING CLASS
+# ─────────────────────────────────────────────────────────────────────────────
 
+class IPTVStreamer:
+    def __init__(self, db_path="channels.db"):
+        self.db_path = db_path
+        self.current_process = None
+        self.current_channel_id = None
+        self.stream_dir = "stream"
+        self.ensure_stream_directory()
 
-def start_ffmpeg_stream(url):
-    global FFMPEG_PROCESS
-    if FFMPEG_PROCESS is not None:
+    def ensure_stream_directory(self):
+        if not os.path.exists(self.stream_dir):
+            os.makedirs(self.stream_dir)
+
+    def cleanup_old_files(self):
         try:
-            os.kill(FFMPEG_PROCESS.pid, signal.SIGTERM)
-        except Exception:
+            for file in os.listdir(self.stream_dir):
+                if file.endswith(('.m3u8', '.ts')):
+                    os.remove(os.path.join(self.stream_dir, file))
+        except:
             pass
 
-    FFMPEG_PROCESS = subprocess.Popen([
-        r'C:\ffmpeg\bin\ffmpeg.exe',
-        '-user_agent', 'IPTV Smarters Pro',
-        '-i', url,
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-f', 'hls',
-        '-hls_time', '2',
-        '-hls_list_size', '10',
-        '-hls_flags', 'delete_segments+append_list',
-        '-hls_allow_cache', '0',
-        'C:/stream/playlist.m3u8'
-    ])
+    def get_channels(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM channels ORDER BY name")
+        channels = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return channels
 
+    def get_channel_by_id(self, channel_id):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM channels WHERE id = ?", (channel_id,))
+        channel = cursor.fetchone()
+        conn.close()
+        return dict(channel) if channel else None
 
-# === ROUTES ===
+    def update_playing_status(self, channel_id):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE channels SET is_playing = 0")
+        if channel_id:
+            cursor.execute("UPDATE channels SET is_playing = 1 WHERE id = ?", (channel_id,))
+        conn.commit()
+        conn.close()
+
+    def stop_current_stream(self):
+        if self.current_process:
+            try:
+                self.current_process.terminate()
+                self.current_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.current_process.kill()
+                self.current_process.wait()
+            except:
+                pass
+            finally:
+                self.current_process = None
+        self.cleanup_old_files()
+
+    def start_stream(self, channel_id):
+        self.stop_current_stream()
+        channel = self.get_channel_by_id(channel_id)
+        if not channel:
+            return False, "Channel not found"
+
+        self.update_playing_status(channel_id)
+        self.current_channel_id = channel_id
+        self.cleanup_old_files()
+
+        stream_path = os.path.join(self.stream_dir, "stream.m3u8")
+
+        ffmpeg_paths = [
+            'ffmpeg', r'C:\ffmpeg\bin\ffmpeg.exe',
+            r'C:\Program Files\ffmpeg\bin\ffmpeg.exe', 'ffmpeg.exe'
+        ]
+        ffmpeg_exe = None
+        for path in ffmpeg_paths:
+            try:
+                subprocess.run([path, '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                ffmpeg_exe = path
+                break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+
+        if not ffmpeg_exe:
+            return False, "FFmpeg not found. Please install FFmpeg and add it to PATH."
+
+        ffmpeg_cmd = [
+            ffmpeg_exe, '-i', channel['url'],
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+            '-profile:v', 'baseline', '-level', '3.0', '-pix_fmt', 'yuv420p',
+            '-r', '25', '-g', '50', '-sc_threshold', '0',
+            '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
+            '-f', 'hls', '-hls_time', '1', '-hls_list_size', '5',
+            '-hls_flags', 'delete_segments+independent_segments',
+            '-hls_segment_type', 'mpegts', '-hls_start_number_source', 'epoch',
+            '-force_key_frames', 'expr:gte(t,n_forced*1)', '-y', stream_path
+        ]
+
+        try:
+            self.current_process = subprocess.Popen(
+                ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE
+            )
+            threading.Thread(target=self._monitor_stream, daemon=True).start()
+            time.sleep(2)
+            return True, f"Started streaming: {channel['name']}"
+        except Exception as e:
+            return False, f"Failed to start stream: {str(e)}"
+
+    def _monitor_stream(self):
+        if self.current_process:
+            _, stderr = self.current_process.communicate()
+            if self.current_process.returncode != 0:
+                print(f"Stream error: {stderr.decode()}")
+                socketio.emit('stream_error', {'message': 'Stream ended unexpectedly'})
+            self.current_process = None
+
+streamer = IPTVStreamer()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Routes
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.route('/')
 @login_required
 def index():
-    try:
-        # Get channels safely
-        channels = Channel.query.all()
+    now_playing = Channel.query.filter_by(is_playing=1).first()
+    online = get_online_users()
+    return render_template("index.html", now_playing=now_playing, online_users=online)
 
-        logger.debug(f"Found {len(channels)} channels")
+@app.route('/api/channels')
+@login_required
+def get_channels():
+    return jsonify(streamer.get_channels())
 
-        if channels:
-            first_channel = channels[0]
-            logger.debug(f"First channel: ID={first_channel.id}, Name={first_channel.name}")
+@app.route('/api/play/<int:channel_id>', methods=['POST'])
+@login_required
+def play_channel(channel_id):
+    success, message = streamer.start_stream(channel_id)
+    if success:
+        socketio.emit('channel_changed', {'channel_id': channel_id, 'message': message})
+    return jsonify({'success': success, 'message': message})
 
-        # ✅ Get the currently playing channel (global)
-        now_playing = Channel.query.filter_by(is_playing=1).first()
+@app.route('/api/stop', methods=['POST'])
+@login_required
+def stop_stream():
+    streamer.stop_current_stream()
+    streamer.update_playing_status(None)
+    streamer.current_channel_id = None
+    socketio.emit('stream_stopped')
+    return jsonify({'success': True, 'message': 'Stream stopped'})
 
-        # ✅ Get list of online users
-        online = get_online_users()
+@app.route('/api/status')
+@login_required
+def get_status():
+    return jsonify({
+        'is_streaming': streamer.current_process is not None,
+        'current_channel_id': streamer.current_channel_id,
+        'process_alive': streamer.current_process.poll() is None if streamer.current_process else False
+    })
 
-        return render_template(
-            'index.html',
-            channels=channels,
-            online_users=online,
-            now_playing=now_playing
-        )
+@app.route('/stream/<path:filename>')
+def serve_stream(filename):
+    file_path = os.path.join(streamer.stream_dir, filename)
+    if not os.path.exists(file_path):
+        return "Stream file not found", 404
 
-    except Exception as e:
-        logger.error(f"Error in index route: {str(e)}")
-        return "Something went wrong", 500
+    mimetype = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else 'video/mp2t'
+    response = send_file(file_path, mimetype=mimetype)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
+@app.route('/toggle_favorite', methods=['POST'])
+@login_required
+def toggle_favorite():
+    data = request.get_json()
+    channel_id = data.get('channel_id')
+    channel = Channel.query.get(channel_id)
+    if channel:
+        channel.favorites = 0 if channel.favorites == 1 else 1
+        db.session.commit()
+        return jsonify({'success': True, 'new_status': channel.favorites})
+    return jsonify({'success': False})
 
-    except Exception as e:
-        logger.error(f"Error in index route: {str(e)}")
-        logger.error(traceback.format_exc())
-        return f"Error loading channels: {str(e)}", 500
-
+@app.route('/get_favorites')
+@login_required
+def get_favorites():
+    favorites = Channel.query.filter_by(favorites=1).all()
+    return jsonify([[ch.id, ch.name] for ch in favorites])
 
 @app.route('/api/online_users')
 @login_required
 def api_online_users():
     return jsonify(get_online_users())
 
+@socketio.on('connect')
+def handle_connect():
+    emit('status', {
+        'is_streaming': streamer.current_process is not None,
+        'current_channel_id': streamer.current_channel_id
+    })
 
-@app.route('/play/<int:channel_id>')
-@login_required
-def play_channel(channel_id):
-    channel = Channel.query.get(channel_id)
-
-    if channel:
-        # ✅ Reset all other channels to not playing
-        Channel.query.update({Channel.is_playing: False})
-
-        # ✅ Set this one to playing
-        channel.is_playing = True
-        db.session.commit()
-
-        # ✅ Start the stream
-        start_ffmpeg_stream(channel.url)
-
-        # ✅ Optionally still store name in session
-        session['current_channel_name'] = channel.name
-
-    return redirect(url_for('index'))
-
-
-@app.route('/toggle_favorite', methods=['POST'])
-@login_required
-def toggle_favorite():
-    try:
-        data = request.get_json()
-        channel_id = data.get('channel_id')
-        channel = Channel.query.get(channel_id)
-        if channel:
-            channel.favorites = 0 if channel.favorites == 1 else 1
-            db.session.commit()
-            return jsonify({'success': True, 'new_status': channel.favorites})
-        return jsonify({'success': False})
-    except Exception as e:
-        logger.error(f"Error toggling favorite: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/get_favorites')
-@login_required
-def get_favorites():
-    try:
-        favorites = Channel.query.filter_by(favorites=1).all()
-        result = []
-        for channel in favorites:
-            result.append([channel.id, channel.name])
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Error getting favorites: {str(e)}")
-        return jsonify([])
-
-
-@app.route('/stream/<path:filename>')
-def stream_files(filename):
-    return send_from_directory('C:/stream', filename)
-
-
-@app.route('/debug_channel_details')
-def debug_channel_details():
-    try:
-        # Get all channels
-        channels = Channel.query.all()
-
-        output = []
-        output.append(f"Total channels: {len(channels)}")
-
-        # Get details of the first few channels
-        for i, channel in enumerate(channels[:5]):
-            output.append(f"Channel {i + 1}:")
-            output.append(f"  ID: {channel.id}")
-            output.append(f"  Name: {channel.name}")
-            output.append(f"  URL: {channel.url}")
-            output.append(f"  Favorites: {channel.favorites}")
-            output.append(f"  Type: {type(channel)}")
-            output.append(f"  Dir: {dir(channel)}")
-            output.append("-" * 40)
-
-        return "<br>".join(output)
-    except Exception as e:
-        logger.error(f"Error in debug_channel_details: {str(e)}")
-        logger.error(traceback.format_exc())
-        return f"Error: {str(e)}"
-
+@socketio.on('disconnect')
+def handle_disconnect():
+    pass
 
 @app.before_request
 def track_user_activity():
@@ -220,48 +263,21 @@ def get_online_users():
         if now - last_seen < ONLINE_TIMEOUT
     ]
 
-
-
-@app.route('/debug_template')
-def debug_template():
-    try:
-        # Return a minimal template with a simple list of channels
-        channels = Channel.query.all()
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Debug Template</title>
-        </head>
-        <body>
-            <h1>Channels Debug</h1>
-            <ul>
-        """
-
-        for channel in channels:
-            html += f"<li>{channel.id} - {channel.name}</li>"
-
-        html += """
-            </ul>
-        </body>
-        </html>
-        """
-
-        return html
-    except Exception as e:
-        return f"Template error: {str(e)}"
-
-
-with app.app_context():
-    db.create_all()
-
-    if not user_datastore.find_role('admin'):
-        user_datastore.create_role(name='admin', description='Administrator')
-        db.session.commit()
-
+def create_app():
+    return app
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050, debug=True)
+    with app.app_context():
+        db.create_all()
+        if not user_datastore.find_role('admin'):
+            user_datastore.create_role(name='admin', description='Administrator')
+            db.session.commit()
+
+    print("✅ IPTV Streaming Server started on http://localhost:5000")
+    print("🔒 Login required to access")
+    socketio.run(app, host='0.0.0.0', port=5000)
+
+
 
 
 
