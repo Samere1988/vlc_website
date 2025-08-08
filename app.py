@@ -19,6 +19,7 @@ app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 online_users = {}
 ONLINE_TIMEOUT = timedelta(minutes=1)
+online_users_lock = threading.Lock()
 
 app.config['SECRET_KEY'] = 'super-secret-key'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///C:/Users/samer/PycharmProjects/vlc website/channels.db'
@@ -254,14 +255,30 @@ def handle_disconnect():
 @app.before_request
 def track_user_activity():
     if current_user.is_authenticated:
-        online_users[current_user.username] = datetime.utcnow()
+        with online_users_lock:
+            online_users[current_user.username] = datetime.utcnow()
+
+def cleanup_online_users():
+    now = datetime.utcnow()
+    with online_users_lock:
+        stale = [u for u, last in online_users.items() if now - last >= ONLINE_TIMEOUT]
+        for u in stale:
+            del online_users[u]
+
 
 def get_online_users():
-    now = datetime.utcnow()
-    return [
-        username for username, last_seen in online_users.items()
-        if now - last_seen < ONLINE_TIMEOUT
-    ]
+    cleanup_online_users()
+    with online_users_lock:
+        return list(online_users.keys())
+
+
+def _cleanup_loop():
+    while True:
+        cleanup_online_users()
+        time.sleep(30)
+
+
+threading.Thread(target=_cleanup_loop, daemon=True).start()
 
 def create_app():
     return app
