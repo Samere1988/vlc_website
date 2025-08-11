@@ -1,0 +1,4 @@
+WTForms~=3.2.1
+DateTime~=5.5
+fastapi~=0.116.1
+SQLAlchemy~=2.0.40

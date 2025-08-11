@@ -21,7 +21,7 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -46,10 +46,14 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
         .status-info {
             font-size: 1.1rem;
+            display: flex;
+            align-items: center;
         }
 
         .status-indicator {
@@ -63,9 +67,57 @@
         .status-live { background-color: #ff4444; }
         .status-idle { background-color: #888; }
 
-        .controls {
+        /* Video Player Styles */
+        .video-container {
+            background: rgba(0,0,0,0.5);
+            border-radius: 15px;
+            padding: 20px;
             margin-bottom: 30px;
             text-align: center;
+        }
+
+        .video-player {
+            width: 100%;
+            max-width: 100%;
+            height: 600px;
+            background: #000;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .video-placeholder {
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+            padding: 60px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 600px;
+        }
+
+        /* Controls and Filters */
+        .controls-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .left-controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .right-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
         }
 
         .btn {
@@ -73,12 +125,12 @@
             border: 2px solid rgba(255,255,255,0.3);
             color: white;
             padding: 12px 24px;
-            margin: 0 10px;
             border-radius: 25px;
             cursor: pointer;
             font-size: 1rem;
             transition: all 0.3s ease;
             backdrop-filter: blur(10px);
+            white-space: nowrap;
         }
 
         .btn:hover {
@@ -92,26 +144,101 @@
             cursor: not-allowed;
         }
 
+        .btn.active {
+            background: rgba(255,255,255,0.4);
+            border-color: rgba(255,255,255,0.6);
+        }
+
         .search-box {
-            width: 100%;
-            max-width: 400px;
             padding: 12px 20px;
-            margin: 0 auto 20px;
             border: none;
             border-radius: 25px;
             background: rgba(255,255,255,0.9);
             color: #333;
             font-size: 1rem;
-            display: block;
+            width: 300px;
+            max-width: 100%;
         }
 
         .search-box::placeholder {
             color: #666;
         }
 
+        /* Category Filter */
+        .category-filter {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+
+        .category-btn {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+        }
+
+        .category-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .category-btn.active {
+            background: rgba(255,255,255,0.3);
+            border-color: rgba(255,255,255,0.5);
+        }
+
+        /* Section Headers */
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 30px 0 20px 0;
+            padding: 15px 20px;
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-count {
+            background: rgba(255,255,255,0.2);
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+
+        .favorites-section {
+            margin-bottom: 40px;
+        }
+
+        .all-channels-section {
+            margin-top: 40px;
+        }
+
+        .empty-section {
+            text-align: center;
+            padding: 40px;
+            opacity: 0.6;
+            font-style: italic;
+        }
+
+        /* Channel Grid */
         .channels-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
             gap: 20px;
             margin-top: 20px;
         }
@@ -124,6 +251,7 @@
             cursor: pointer;
             transition: all 0.3s ease;
             border: 2px solid transparent;
+            position: relative;
         }
 
         .channel-card:hover {
@@ -150,12 +278,59 @@
             justify-content: space-between;
         }
 
+        .channel-category {
+            font-size: 0.8rem;
+            opacity: 0.7;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
         .channel-url {
             font-size: 0.9rem;
             opacity: 0.7;
             word-break: break-all;
+            margin-top: 5px;
         }
 
+        .favorite-star {
+            color: #ffd700;
+            margin-left: 10px;
+        }
+
+        .channel-actions {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 5px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .channel-card:hover .channel-actions {
+            opacity: 1;
+        }
+
+        .action-btn {
+            background: rgba(0,0,0,0.5);
+            border: none;
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+        }
+
+        .action-btn:hover {
+            background: rgba(0,0,0,0.7);
+        }
+
+        /* Loading and Notifications */
         .loading {
             text-align: center;
             padding: 40px;
@@ -175,40 +350,6 @@
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
-        }
-
-        .video-container {
-            background: rgba(0,0,0,0.5);
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 30px;
-            text-align: center;
-        }
-
-        .video-player {
-            width: 100%;
-            max-width: 100%;
-            height: 400px;
-            background: #000;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-
-        .video-placeholder {
-            background: rgba(255,255,255,0.1);
-            border-radius: 10px;
-            padding: 60px 20px;
-            margin-bottom: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 400px;
-        }
-
-        .favorite-star {
-            color: #ffd700;
-            margin-left: 10px;
         }
 
         .notification {
@@ -235,6 +376,26 @@
             opacity: 0.8;
         }
 
+        /* EPG Styles */
+        .epg-info {
+            background: rgba(255,255,255,0.1);
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-size: 0.85rem;
+        }
+
+        .epg-current {
+            font-weight: bold;
+            color: #4CAF50;
+        }
+
+        .epg-next {
+            opacity: 0.7;
+            margin-top: 5px;
+        }
+
+        /* Responsive Design */
         @media (max-width: 768px) {
             .channels-grid {
                 grid-template-columns: 1fr;
@@ -246,15 +407,30 @@
 
             .status-bar {
                 flex-direction: column;
-                gap: 10px;
+                text-align: center;
             }
 
-            .video-player {
-                height: 250px;
+            .controls-section {
+                flex-direction: column;
+                align-items: stretch;
             }
 
-            .video-placeholder {
-                height: 250px;
+            .left-controls, .right-controls {
+                justify-content: center;
+            }
+
+            .search-box {
+                width: 100%;
+            }
+
+            .video-player, .video-placeholder {
+                height: 400px;
+            }
+
+            .category-filter {
+                justify-content: flex-start;
+                overflow-x: auto;
+                padding-bottom: 10px;
             }
         }
     </style>
@@ -262,8 +438,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎬 IPTV Stream Controller</h1>
-            <p>Fast Channel Switching with HLS Streaming</p>
+            <h1>Discord TV</h1>
+            <p>For those in decline</p>
         </div>
 
         <div class="status-bar">
@@ -272,34 +448,58 @@
                 <span id="status-text">Ready</span>
             </div>
             <div id="current-channel">No channel selected</div>
+            <div><strong>Users Online:</strong> <span id="online-users">Loading...</span></div>
         </div>
 
         <div class="video-container">
             <div id="video-placeholder" class="video-placeholder">
                 <h2>🎥 Select a Channel to Start Streaming</h2>
                 <p>Click any channel below to begin watching</p>
-                <div class="stream-info">
-                    <strong>Stream URL:</strong> http://localhost:5000/stream/stream.m3u8<br>
-                    <strong>Latency:</strong> ~2-4 seconds<br>
-                    <strong>Format:</strong> HLS (HTTP Live Streaming)
-                </div>
             </div>
             <video id="video-player" class="video-player" controls autoplay muted style="display: none;">
                 Your browser does not support HTML5 video.
             </video>
-            <div class="controls">
-                <button class="btn" onclick="stopStream()">⏹️ Stop Stream</button>
-                <button class="btn" onclick="refreshChannels()">🔄 Refresh</button>
-                <button class="btn" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+            <div class="controls-section">
+                <div class="right-controls">
+                    <input type="text" class="search-box" id="search" placeholder="🔍 Search channels..." oninput="filterChannels()">
+                </div>
             </div>
         </div>
 
-        <input type="text" class="search-box" id="search" placeholder="🔍 Search channels..." oninput="filterChannels()">
+        <!-- Category Filter -->
+        <div class="category-filter" id="category-filter">
+            <button class="category-btn active" onclick="filterByCategory('all')">All Categories</button>
+        </div>
 
-        <div id="channels-container">
-            <div class="loading">
-                <div class="loading-spinner"></div>
-                <p>Loading channels...</p>
+        <!-- Favorites Section -->
+        <div class="favorites-section">
+            <div class="section-header">
+                <div class="section-title">
+                    ⭐ Favorite Channels
+                    <span class="section-count" id="favorites-count">0</span>
+                </div>
+            </div>
+            <div id="favorites-container">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>Loading favorites...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- All Channels Section -->
+        <div class="all-channels-section">
+            <div class="section-header">
+                <div class="section-title">
+                    📺 All Channels
+                    <span class="section-count" id="all-channels-count">0</span>
+                </div>
+            </div>
+            <div id="channels-container">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>Loading channels...</p>
+                </div>
             </div>
         </div>
     </div>
@@ -312,9 +512,12 @@
         let channels = [];
         let currentChannelId = null;
         let hls = null;
+        let currentCategory = 'all';
+        let currentSearchTerm = '';
 
         // DOM elements
         const channelsContainer = document.getElementById('channels-container');
+        const favoritesContainer = document.getElementById('favorites-container');
         const statusIndicator = document.getElementById('status-indicator');
         const statusText = document.getElementById('status-text');
         const currentChannelDiv = document.getElementById('current-channel');
@@ -322,6 +525,9 @@
         const notification = document.getElementById('notification');
         const videoPlayer = document.getElementById('video-player');
         const videoPlaceholder = document.getElementById('video-placeholder');
+        const favoritesCount = document.getElementById('favorites-count');
+        const allChannelsCount = document.getElementById('all-channels-count');
+        const categoryFilter = document.getElementById('category-filter');
 
         // Load channels on page load
         document.addEventListener('DOMContentLoaded', function() {
@@ -455,6 +661,20 @@
             videoPlayer.style.display = 'none';
             videoPlaceholder.style.display = 'flex';
         }
+        function refreshOnlineUsers() {
+          fetch('/api/online_users')
+            .then(res => res.json())
+            .then(data => {
+              const box = document.getElementById('online-users');
+              if (data.length > 0) {
+                box.textContent = data.join(', ');
+              } else {
+                box.textContent = 'No users online';
+              }
+            });
+        }
+        setInterval(refreshOnlineUsers, 5000);
+        refreshOnlineUsers();
 
         function toggleFullscreen() {
             if (videoPlayer.requestFullscreen) {
@@ -471,31 +691,146 @@
             try {
                 const response = await fetch('/api/channels');
                 channels = await response.json();
-                renderChannels(channels);
+                buildCategoryFilter();
+                renderChannelsSeparately();
             } catch (error) {
                 console.error('Error loading channels:', error);
                 channelsContainer.innerHTML = '<div class="loading"><p>Error loading channels</p></div>';
+                favoritesContainer.innerHTML = '<div class="loading"><p>Error loading favorites</p></div>';
+            }
+        }
+
+        function buildCategoryFilter() {
+            // Extract categories from channel names (assuming format like "Sky Sports News HD")
+            const categories = new Set();
+            channels.forEach(channel => {
+                const parts = channel.name.split(' ');
+                if (parts.length > 1) {
+                    categories.add(parts[0]); // First word as category
+                }
+            });
+
+            // Build category filter buttons
+            let categoryHtml = '<button class="category-btn active" onclick="filterByCategory(\'all\')">All Categories</button>';
+            Array.from(categories).sort().forEach(category => {
+                categoryHtml += `<button class="category-btn" onclick="filterByCategory('${category}')">${category}</button>`;
+            });
+
+            categoryFilter.innerHTML = categoryHtml;
+        }
+
+        function filterByCategory(category) {
+            currentCategory = category;
+
+            // Update active button
+            document.querySelectorAll('.category-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Re-render with current filters
+            applyFilters();
+        }
+
+        function filterChannels() {
+            currentSearchTerm = searchInput.value.toLowerCase();
+            applyFilters();
+        }
+
+        function applyFilters() {
+            let filteredChannels = channels;
+
+            // Apply category filter
+            if (currentCategory !== 'all') {
+                filteredChannels = filteredChannels.filter(channel =>
+                    channel.name.toLowerCase().startsWith(currentCategory.toLowerCase())
+                );
+            }
+
+            // Apply search filter
+            if (currentSearchTerm) {
+                filteredChannels = filteredChannels.filter(channel =>
+                    channel.name.toLowerCase().includes(currentSearchTerm)
+                );
+            }
+
+            renderChannels(filteredChannels);
+        }
+
+        function renderChannelsSeparately() {
+            // Separate favorites and all channels (no filters applied)
+            const favoriteChannels = channels.filter(channel => channel.Favorites);
+            const allChannels = channels;
+
+            // Update counts
+            favoritesCount.textContent = favoriteChannels.length;
+            allChannelsCount.textContent = allChannels.length;
+
+            // Render favorites
+            if (favoriteChannels.length === 0) {
+                favoritesContainer.innerHTML = '<div class="empty-section">No favorite channels found. Mark channels as favorites to see them here!</div>';
+            } else {
+                favoritesContainer.innerHTML = renderChannelGrid(favoriteChannels);
+            }
+
+            // Render all channels
+            if (allChannels.length === 0) {
+                channelsContainer.innerHTML = '<div class="empty-section">No channels found</div>';
+            } else {
+                channelsContainer.innerHTML = renderChannelGrid(allChannels);
             }
         }
 
         function renderChannels(channelsToRender) {
+            // This function is used for filtered results
             if (channelsToRender.length === 0) {
-                channelsContainer.innerHTML = '<div class="loading"><p>No channels found</p></div>';
+                channelsContainer.innerHTML = '<div class="empty-section">No channels match your filters</div>';
+                favoritesContainer.innerHTML = '<div class="empty-section">No favorites match your filters</div>';
                 return;
             }
 
-            const html = channelsToRender.map(channel => `
-                <div class="channel-card ${channel.is_playing ? 'playing' : ''} ${channel.Favorites ? 'favorite' : ''}"
-                     onclick="playChannel(${channel.id})">
-                    <div class="channel-name">
-                        ${channel.name}
-                        ${channel.Favorites ? '<span class="favorite-star">⭐</span>' : ''}
-                    </div>
-                    <div class="channel-url">${channel.url}</div>
-                </div>
-            `).join('');
+            const favoriteChannels = channelsToRender.filter(channel => channel.Favorites);
 
-            channelsContainer.innerHTML = `<div class="channels-grid">${html}</div>`;
+            // Update counts for filtered results
+            favoritesCount.textContent = favoriteChannels.length;
+            allChannelsCount.textContent = channelsToRender.length;
+
+            // Render filtered favorites
+            if (favoriteChannels.length === 0) {
+                favoritesContainer.innerHTML = '<div class="empty-section">No favorites match your filters</div>';
+            } else {
+                favoritesContainer.innerHTML = renderChannelGrid(favoriteChannels);
+            }
+
+            // Render filtered all channels
+            channelsContainer.innerHTML = renderChannelGrid(channelsToRender);
+        }
+
+        function renderChannelGrid(channelsToRender) {
+            const html = channelsToRender.map(channel => {
+                // Extract category for display
+                const category = channel.name.split(' ')[0];
+
+                return `
+                    <div class="channel-card ${channel.is_playing ? 'playing' : ''} ${channel.Favorites ? 'favorite' : ''}"
+                         onclick="playChannel(${channel.id})">
+                        <div class="channel-actions">
+                            <button class="action-btn" onclick="event.stopPropagation(); toggleFavorite(${channel.id})"
+                                    title="${channel.Favorites ? 'Remove from favorites' : 'Add to favorites'}">
+                                ${channel.Favorites ? '⭐' : '☆'}
+                            </button>
+                        </div>
+                        <div class="channel-category">${category}</div>
+                        <div class="channel-name">
+                            ${channel.name}
+                            ${channel.Favorites ? '<span class="favorite-star">⭐</span>' : ''}
+                        </div>
+                        <div class="channel-url">${channel.url}</div>
+                    </div>
+                `;
+            }).join('');
+
+            return `<div class="channels-grid">${html}</div>`;
         }
 
         async function playChannel(channelId) {
@@ -542,12 +877,10 @@
             }
         }
 
-        function filterChannels() {
-            const searchTerm = searchInput.value.toLowerCase();
-            const filteredChannels = channels.filter(channel =>
-                channel.name.toLowerCase().includes(searchTerm)
-            );
-            renderChannels(filteredChannels);
+        async function toggleFavorite(channelId) {
+            // This would need to be implemented in your backend
+            // For now, just show a notification
+            showNotification('Favorite toggle feature needs backend implementation', 'info');
         }
 
         function refreshChannels() {
@@ -563,8 +896,9 @@
         }
 
         function updateChannelCards() {
-            const cards = document.querySelectorAll('.channel-card');
-            cards.forEach(card => {
+            // Update cards in both favorites and all channels sections
+            const allCards = document.querySelectorAll('.channel-card');
+            allCards.forEach(card => {
                 const onclick = card.getAttribute('onclick');
                 if (onclick) {
                     const channelId = parseInt(onclick.match(/\d+/)[0]);
@@ -632,11 +966,6 @@
     </script>
 </body>
 </html>
-
-
-
-
-
 
 
 
