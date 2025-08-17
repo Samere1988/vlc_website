@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IPTV Stream Controller</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.12/hls.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -511,9 +510,64 @@
         const socket = io();
         let channels = [];
         let currentChannelId = null;
-        let hls = null;
         let currentCategory = 'all';
         let currentSearchTerm = '';
+
+        // --- WebRTC only ---
+        let pc = null;
+
+        async function startWebRTC() {
+            // close any previous PeerConnection
+            if (pc) {
+                try { pc.close(); } catch (e) {}
+                pc = null;
+            }
+
+            pc = new RTCPeerConnection({
+                iceServers: [
+                    { urls: "stun:stun.l.google.com:19302" }
+                    // Add TURN here if needed:
+                    // { urls: "turn:YOUR_TURN_HOST:3478", username: "user", credential: "pass" }
+                ]
+            });
+
+            const video = document.getElementById('video-player');
+
+            pc.ontrack = (e) => {
+                video.srcObject = e.streams[0];
+                showVideoPlayer();
+            };
+
+            pc.onconnectionstatechange = () => {
+                console.log('WebRTC state:', pc.connectionState);
+            };
+
+            const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+            await pc.setLocalDescription(offer);
+
+            const res = await fetch("/webrtc/offer", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ sdp: offer.sdp, type: offer.type })
+            });
+
+            if (!res.ok) {
+                console.error("WebRTC offer failed:", await res.text());
+                showNotification('Failed to start WebRTC stream', 'error');
+                return;
+            }
+
+            const answer = await res.json();
+            await pc.setRemoteDescription(answer);
+        }
+
+        function stopWebRTC() {
+            if (pc) {
+                try { pc.close(); } catch (e) {}
+                pc = null;
+            }
+        }
+        // --- end WebRTC ---
 
         // DOM elements
         const channelsContainer = document.getElementById('channels-container');
@@ -553,8 +607,8 @@
             updateChannelCards();
             showNotification(data.message, 'success');
 
-            // Start loading the stream
-            setTimeout(loadStream, 2000); // Wait 2 seconds for FFmpeg to start
+            // Start WebRTC playback
+            setTimeout(startWebRTC, 800); // allow backend to switch source
         });
 
         socket.on('stream_stopped', function() {
@@ -578,7 +632,7 @@
             updateChannelCards();
 
             if (data.is_streaming && currentChannelId) {
-                setTimeout(loadStream, 1000);
+                setTimeout(startWebRTC, 500);
             }
         });
 
@@ -595,58 +649,14 @@
             });
 
             videoPlayer.addEventListener('error', function(e) {
-                console.error('Video error:', e);
+                console.error('Video playback error:', e);
                 showNotification('Video playback error', 'error');
                 showVideoPlaceholder();
             });
         }
 
-        function loadStream() {
-            const streamUrl = '/stream/stream.m3u8';
-
-            if (Hls.isSupported()) {
-                if (hls) {
-                    hls.destroy();
-                }
-
-                hls = new Hls({
-                    lowLatencyMode: true,
-                    backBufferLength: 30,
-                    maxBufferLength: 60,
-                    maxMaxBufferLength: 120,
-                    enableWorker: false
-                });
-
-                hls.loadSource(streamUrl);
-                hls.attachMedia(videoPlayer);
-
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                    console.log('HLS manifest parsed');
-                    videoPlayer.play().catch(e => console.log('Autoplay prevented:', e));
-                });
-
-                hls.on(Hls.Events.ERROR, function(event, data) {
-                    console.error('HLS error:', data);
-                    if (data.fatal) {
-                        showNotification('Stream loading failed. Retrying...', 'error');
-                        setTimeout(loadStream, 3000); // Retry after 3 seconds
-                    }
-                });
-
-            } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
-                // Safari native HLS support
-                videoPlayer.src = streamUrl;
-                videoPlayer.play().catch(e => console.log('Autoplay prevented:', e));
-            } else {
-                showNotification('HLS not supported in this browser', 'error');
-            }
-        }
-
         function stopVideoPlayer() {
-            if (hls) {
-                hls.destroy();
-                hls = null;
-            }
+            stopWebRTC();
             videoPlayer.pause();
             videoPlayer.src = '';
             showVideoPlaceholder();
@@ -661,6 +671,7 @@
             videoPlayer.style.display = 'none';
             videoPlaceholder.style.display = 'flex';
         }
+
         function refreshOnlineUsers() {
           fetch('/api/online_users')
             .then(res => res.json())
@@ -673,8 +684,15 @@
               }
             });
         }
-        setInterval(refreshOnlineUsers, 5000);
-        refreshOnlineUsers();
+        function sendHeartbeat() {
+          fetch('/api/heartbeat', { method: 'POST' }).catch(() => {});
+        }
+        function tickOnlineUsers() {
+          sendHeartbeat();
+          refreshOnlineUsers();
+        }
+        tickOnlineUsers();
+        setInterval(tickOnlineUsers, 5000);
 
         function toggleFullscreen() {
             if (videoPlayer.requestFullscreen) {
@@ -951,7 +969,7 @@
                     currentChannelId = status.current_channel_id;
                     updateStatus(true, `Streaming: ${getChannelName(currentChannelId)}`);
                     updateChannelCards();
-                    loadStream();
+                    startWebRTC();
                 } else if (!status.is_streaming && currentChannelId) {
                     // Stream stopped but we think it's running
                     currentChannelId = null;
@@ -966,11 +984,3 @@
     </script>
 </body>
 </html>
-
-
-
-
-
-
-
-

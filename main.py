@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Form, Depends, HTTPException
+from fastapi import FastAPI, Request, Form, Depends, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -9,11 +9,13 @@ from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.gzip import GZipMiddleware
-import os, shutil, subprocess, threading, sqlite3, asyncio, time, socketio
+import os, sqlite3, asyncio, socketio
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.contrib.media import MediaPlayer, MediaRelay
+import time
+from collections import defaultdict
 
-# ──────────────── SETUP ────────────────
+# ─────────────── App / Auth setup ───────────────
 SECRET_KEY = "super-secret"
 RESET_SECRET = "reset-secret"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -24,55 +26,89 @@ fastapi_app = FastAPI()
 fastapi_app.add_middleware(PatchedSessionMiddleware, secret_key=SECRET_KEY)
 asgi_app = socketio.ASGIApp(sio, fastapi_app)
 
-fastapi_app.mount("/stream", StaticFiles(directory="stream"), name="stream")
+# Keep static mount if you still have old assets in "stream"
+if os.path.isdir("stream"):
+    fastapi_app.mount("/stream", StaticFiles(directory="stream"), name="stream")
+
 templates = Jinja2Templates(directory="templates")
 
-# ──────────────── DATABASE ────────────────
+# ─────────────── Database (users) ───────────────
 Base = declarative_base()
 engine = create_engine("sqlite:///./users.db", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
-online_users = {}
+online_users = set()
 
-@fastapi_app.middleware("http")
-async def no_cache_static_headers(request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith("/stream/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
-@sio.event
-async def connect(sid, environ):
-    scope = environ.get("asgi.scope")
-    session = scope.get("session") if scope else None
-    if not session:
-        return
+online_last_seen: dict[str, float] = {}
+sid_to_username: dict[str, str] = {}
+username_conn_counts = defaultdict(int)
 
-    email = session.get("user")
-    if not email:
-        return
+# --- put this helper anywhere near the top of main.py ---
+def _sdp_force_high_bitrate(sdp: str, max_kbps: int = 10000) -> str:
+    """
+    Munges SDP to request high video bitrate:
+      - inserts b=AS / b=TIAS in the video m-section
+      - adds x-google-{start,min,max}-bitrate for VP8/VP9 payload types
+    Returns a new SDP string.
+    """
+    lines = sdp.splitlines()
+    out = []
+    in_video = False
+    injected_b_line = False
+    vp8_pt = None
+    vp9_pt = None
 
-    db = SessionLocal()
-    user = db.query(User).filter(User.email == email).first()
-    db.close()
+    # First pass: copy lines, remember VP8/VP9 payload types, and inject b= lines in video section
+    for i, line in enumerate(lines):
+        if line.startswith("m="):
+            in_video = line.startswith("m=video")
+            injected_b_line = False
+            out.append(line)
+            continue
 
-    if user:
-        online_users[sid] = user.username  # ✅ Map sid → username
+        if in_video and (line.startswith("c=") and not injected_b_line):
+            # Insert bitrate lines immediately after the connection line
+            out.append(line)
+            out.append(f"b=AS:{max_kbps}")
+            out.append(f"b=TIAS:{max_kbps * 1000}")
+            injected_b_line = True
+            continue
 
-    await sio.emit("online_users", list(online_users.values()))
+        if line.startswith("a=rtpmap:"):
+            # a=rtpmap:<pt> <codec>/<clock>
+            try:
+                pt = line.split(":")[1].split()[0]
+            except Exception:
+                pt = None
+            if "VP8/90000" in line:
+                vp8_pt = pt
+            elif "VP9/90000" in line:
+                vp9_pt = pt
 
+        out.append(line)
 
+    # Second pass: if we saw VP8/VP9, append fmtp hints (ok to append at end)
+    def add_fmtp(pt):
+        if not pt:
+            return
+        # If there's an existing fmtp for this PT, append the x-google params; else add new fmtp
+        for idx, l in enumerate(out):
+            if l.startswith(f"a=fmtp:{pt} "):
+                if "x-google-max-bitrate" not in l:
+                    out[idx] = (
+                        f"{l};x-google-start-bitrate={max_kbps};"
+                        f"x-google-min-bitrate={max_kbps};x-google-max-bitrate={max_kbps}"
+                    )
+                return
+        out.append(
+            f"a=fmtp:{pt} x-google-start-bitrate={max_kbps};"
+            f"x-google-min-bitrate={max_kbps};x-google-max-bitrate={max_kbps}"
+        )
 
+    add_fmtp(vp8_pt)
+    add_fmtp(vp9_pt)
 
-@sio.event
-async def disconnect(sid):
-    if sid in online_users:
-        del online_users[sid]
-        await sio.emit("online_users", list(online_users.values()))
+    return "\r\n".join(out) + "\r\n"
 
-@fastapi_app.get("/api/online_users")
-async def get_online_users():
-    return list(online_users.values())
 
 class User(Base):
     __tablename__ = "users"
@@ -90,162 +126,144 @@ def get_db():
     finally:
         db.close()
 
-# ──────────────── STREAMING ────────────────
-class IPTVStreamer:
-    def __init__(self, db_path="channels.db"):
-        self.db_path = db_path
-        self.current_channel_id = None
-        self.current_process = None
+# ─────────────── Channels DB (SQLite) ───────────────
+CHANNELS_DB_PATH = "channels.db"
 
-    def cleanup_old_files(self):
-        for file in os.listdir("stream"):
-            if file.endswith((".m3u8", ".ts")):
-                try:
-                    os.remove(os.path.join("stream", file))
-                except:
-                    pass
+def get_channel_by_id(channel_id: int):
+    conn = sqlite3.connect(CHANNELS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM channels WHERE id = ?", (channel_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
-    def get_channels(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM channels ORDER BY name")
-        channels = [dict(row) for row in cursor.fetchall()]
-        for ch in channels:
-            ch['is_playing'] = (ch['id'] == self.current_channel_id)
-            ch['Favorites'] = bool(ch.get('Favorites', 0))
-        conn.close()
-        return channels
+def mark_playing(channel_id: int | None):
+    conn = sqlite3.connect(CHANNELS_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE channels SET is_playing = 0")
+    if channel_id is not None:
+        cur.execute("UPDATE channels SET is_playing = 1 WHERE id = ?", (channel_id,))
+    conn.commit()
+    conn.close()
 
-    def get_channel_by_id(self, channel_id):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM channels WHERE id = ?", (channel_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return dict(row) if row else None
+def list_channels():
+    conn = sqlite3.connect(CHANNELS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM channels ORDER BY name")
+    rows = [dict(r) for r in cur.fetchall()]
+    for ch in rows:
+        ch['Favorites'] = bool(ch.get('Favorites', 0))
+        ch['is_playing'] = (ch['id'] == current_channel_id)
+    conn.close()
+    return rows
 
-    def update_playing_status(self, channel_id):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE channels SET is_playing = 0")
-        if channel_id:
-            cursor.execute("UPDATE channels SET is_playing = 1 WHERE id = ?", (channel_id,))
-        conn.commit()
-        conn.close()
+# ─────────────── WebRTC broadcaster state ───────────────
+relay = MediaRelay()
+player = None                 # shared MediaPlayer (current source)
+current_channel_id = None
+peers: set[RTCPeerConnection] = set()
+player_lock = asyncio.Lock()
 
-    def stop_current_stream(self):
-        if self.current_process:
-            try:
-                self.current_process.terminate()
-                self.current_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.current_process.kill()
-            finally:
-                self.current_process = None
-        self.cleanup_old_files()
+async def set_channel_from_id(channel_id: int):
+    """
+    Replace the shared MediaPlayer from the channel's URL.
+    Decodes once; all viewers subscribe via relay.
+    """
+    global player, current_channel_id
+    channel = get_channel_by_id(channel_id)
+    if not channel:
+        raise ValueError("Channel not found")
 
-    def start_stream(self, channel_id):
-        self.stop_current_stream()
-        channel = self.get_channel_by_id(channel_id)
-        if not channel:
-            return False, "Channel not found"
+    url = channel['url']
 
-        self.update_playing_status(channel_id)
-        self.current_channel_id = channel_id
-        self.cleanup_old_files()
-
-        stream_path = os.path.join("stream", "stream.m3u8")
-
-        ffmpeg_paths = ['ffmpeg', r'C:\\ffmpeg\\bin\\ffmpeg.exe', r'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe', 'ffmpeg.exe']
-        ffmpeg_exe = next((p for p in ffmpeg_paths if shutil.which(p)), None)
-        if not ffmpeg_exe:
-            return False, "FFmpeg not found."
-
-        ffmpeg_cmd = [
-            ffmpeg_exe,
-            '-re',
-            '-rw_timeout', '5000000',
-            '-i', channel['url'],
-            '-vf', 'scale=1920:-1',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
-            '-b:v', '3000k', '-maxrate', '3500k', '-bufsize', '5000k',
-            '-profile:v', 'baseline', '-level', '3.0', '-pix_fmt', 'yuv420p',
-            '-r', '25', '-g', '100', '-sc_threshold', '0',
-            '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
-            '-f', 'hls',
-            '-hls_time', '4',
-            '-hls_list_size', '6',
-            '-hls_flags', 'delete_segments+independent_segments',
-            '-hls_segment_filename', os.path.join("stream", "segment_%03d.ts"),
-            '-hls_start_number_source', 'epoch',
-            '-hls_segment_type', 'mpegts',
-            '-force_key_frames', 'expr:gte(t,n_forced*4)',
-            '-y', stream_path
-        ]
-
+    # stop old player if any
+    old = player
+    player = None
+    if old and hasattr(old, "stop"):
         try:
-            self.current_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            threading.Thread(target=self._monitor_stream, daemon=True).start()
-            time.sleep(2)
-            return True, f"Started streaming: {channel['name']}"
-        except Exception as e:
-            return False, f"Failed to start stream: {str(e)}"
+            old.stop()
+        except Exception:
+            pass
 
-    def _monitor_stream(self):
-        proc = self.current_process
-        if proc:
-            _, stderr = proc.communicate()
-            if proc.returncode != 0:
-                print(f"Stream error: {stderr.decode()}")
-                asyncio.run(sio.emit('stream_error', {'message': 'Stream ended unexpectedly'}))
+    # aiortc MediaPlayer pulls RTSP/RTMP/HLS/HTTP using ffmpeg via PyAV
+    new_player = MediaPlayer(url)
 
-                # Attempt auto-restart
-                if self.current_channel_id:
-                    print("Attempting to auto-restart stream...")
-                    time.sleep(3)  # brief delay to avoid thrashing
-                    self.start_stream(self.current_channel_id)
+    player = new_player
+    current_channel_id = channel_id
+    mark_playing(channel_id)
 
-            self.current_process = None
+    # notify clients
+    await sio.emit('channel_changed', {'channel_id': channel_id, 'message': f"Started: {channel['name']}"})
 
-streamer = IPTVStreamer()
+# ─────────────── Socket.IO events ───────────────
+@sio.event
+async def connect(sid, environ):
+    scope = environ.get("asgi.scope")
+    session = scope.get("session") if scope else None
+    if not session:
+        return
+    email = session.get("user")
+    if not email:
+        return
 
-# ──────────────── ROUTES ────────────────
+    db = SessionLocal()
+    user = db.query(User).filter(User.email == email).first()
+    db.close()
+    if user:
+        username = user.username
+        online_users.add(username)
+        username_conn_counts[username] += 1
+        sid_to_username[sid] = username
+        online_last_seen[username] = time.time()
+
+    await sio.emit("status", {
+        "is_streaming": current_channel_id is not None,
+        "current_channel_id": current_channel_id
+    })
+
+@sio.event
+async def disconnect(sid):
+    username = sid_to_username.pop(sid, None)
+    if not username:
+        return
+    cnt = username_conn_counts.get(username, 0) - 1
+    if cnt <= 0:
+        username_conn_counts.pop(username, None)
+        # do not immediately drop; let pruning remove if no more heartbeats
+        # (but you can also discard here if you prefer hard-drop)
+        online_users.discard(username)
+        online_last_seen.pop(username, None)
+    else:
+        username_conn_counts[username] = cnt
+        online_last_seen[username] = time.time()
+
+# ─────────────── Routes / Pages ───────────────
 @fastapi_app.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: Session = Depends(get_db)):
     user_email = request.session.get("user")
     user = db.query(User).filter(User.email == user_email).first() if user_email else None
-
-    if user:
-        online_users[user_email] = user.username  # 👈 Track by email to username
-
     if not user:
         return RedirectResponse("/login")
-
-    now_playing = streamer.get_channel_by_id(streamer.current_channel_id)
-    channels = streamer.get_channels()
-    favorites = [ch for ch in channels if ch.get("Favorites")]
-
+    now_playing = get_channel_by_id(current_channel_id) if current_channel_id else None
     return templates.TemplateResponse("index.html", {
         "request": request,
         "user": user,
-        "now_playing": now_playing,
-        "channels": channels,
-        "favorites": favorites
+        "now_playing": now_playing
     })
-
-@fastapi_app.get("/forgot-password", name="forgot_password")
-async def forgot_password(request: Request):
-    return HTMLResponse("<h2>Forgot password is not implemented yet</h2>")
-
-@fastapi_app.post("/forgot-password", response_class=HTMLResponse)
-async def forgot_password_submit(request: Request, email: str = Form(...)):
-    # You can implement email reset logic here
-    return templates.TemplateResponse("forgot_password.html", {
-        "request": request,
-        "message": f"If {email} exists, a reset link will be sent."
-    })
+@fastapi_app.post("/api/heartbeat")
+async def api_heartbeat(request: Request, db: Session = Depends(get_db)):
+    user_email = request.session.get("user")
+    if not user_email:
+        return {"ok": False}
+    user = db.query(User).filter(User.email == user_email).first()
+    if not user:
+        return {"ok": False}
+    username = user.username
+    online_users.add(username)
+    online_last_seen[username] = time.time()
+    return {"ok": True}
 @fastapi_app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return templates.TemplateResponse("security/login_user.html", {"request": request})
@@ -256,69 +274,97 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
     if not user or not pwd_context.verify(password, user.hashed_password):
         return templates.TemplateResponse("security/login_user.html", {"request": request, "error": "Invalid credentials"})
     request.session["user"] = user.email
-    online_users[user.username] = True
+    online_users.add(user.username)
     return RedirectResponse("/", status_code=302)
 
 @fastapi_app.get("/logout")
-async def logout(request: Request):
+async def logout(request: Request, db: Session = Depends(get_db)):
     user_email = request.session.get("user")
     if user_email:
+        user = db.query(User).filter(User.email == user_email).first()
+        if user:
+            username = user.username
+            username_conn_counts.pop(username, None)
+            online_users.discard(username)
+            online_last_seen.pop(username, None)
         request.session.clear()
-        online_users.discard(user_email)
     return RedirectResponse("/login")
-@fastapi_app.get("/register", name="register")
-async def register_page(request: Request):
-    return templates.TemplateResponse("security/register_user.html", {"request": request})
-
-@fastapi_app.post("/register")
-async def register_user(request: Request,
-                        username: str = Form(...),
-                        email: str = Form(...),
-                        password: str = Form(...),
-                        password_confirm: str = Form(...),
-                        db: Session = Depends(get_db)):
-    if password != password_confirm:
-        return templates.TemplateResponse("security/register_user.html", {
-            "request": request,
-            "error": "Passwords do not match"
-        })
-
-    existing = db.query(User).filter((User.email == email) | (User.username == username)).first()
-    if existing:
-        return templates.TemplateResponse("security/register_user.html", {
-            "request": request,
-            "error": "Email or username already exists"
-        })
-
-    user = User(username=username, email=email, hashed_password=pwd_context.hash(password))
-    db.add(user)
-    db.commit()
-    return RedirectResponse("/login", status_code=302)
+# ─────────────── REST APIs ───────────────
+@fastapi_app.get("/api/online_users")
+async def get_online_users():
+    now = time.time()
+    cutoff = now - 15  # allow 3×5s grace
+    # prune stale
+    for u, ts in list(online_last_seen.items()):
+        if ts < cutoff and username_conn_counts.get(u, 0) == 0:
+            online_last_seen.pop(u, None)
+            online_users.discard(u)
+    return sorted(list(online_users))
 
 @fastapi_app.get("/api/channels")
 async def api_channels():
-    return streamer.get_channels()
+    return list_channels()
 
 @fastapi_app.get("/api/status")
 async def api_status():
-    return {
-        "is_streaming": streamer.current_channel_id is not None,
-        "current_channel_id": streamer.current_channel_id
-    }
-
-@fastapi_app.get("/api/online_users")
-async def api_online_users():
-    return list(online_users.keys())
+    return {"is_streaming": current_channel_id is not None, "current_channel_id": current_channel_id}
 
 @fastapi_app.post("/api/play/{channel_id}")
 async def api_play(channel_id: int):
-    success, message = streamer.start_stream(channel_id)
-    await sio.emit('channel_changed', {'channel_id': channel_id, 'message': message})
-    return {"success": success, "message": message}
+    async with player_lock:
+        try:
+            await set_channel_from_id(channel_id)
+            return {"success": True, "message": "OK"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
 @fastapi_app.post("/api/stop")
 async def api_stop():
-    streamer.stop_current_stream()
+    global player, current_channel_id
+    async with player_lock:
+        old = player
+        player = None
+        current_channel_id = None
+        mark_playing(None)
+        if old and hasattr(old, "stop"):
+            try:
+                old.stop()
+            except Exception:
+                pass
     await sio.emit('stream_stopped')
-    return {"success": True, "message": "Stream stopped"}
+    return {"success": True, "message": "Stopped"}
+
+# ─────────────── WebRTC signaling ───────────────
+@fastapi_app.post("/webrtc/offer")
+async def webrtc_offer(sdp: dict = Body(...)):
+    if player is None:
+        return JSONResponse({"error": "No active source"}, status_code=409)
+
+    pc = RTCPeerConnection()
+    peers.add(pc)
+
+    @pc.on("connectionstatechange")
+    async def on_state_change():
+        if pc.connectionState in ("failed", "closed", "disconnected"):
+            await pc.close()
+            peers.discard(pc)
+
+    # 1) Set remote offer
+    offer = RTCSessionDescription(sdp["sdp"], sdp["type"])
+    await pc.setRemoteDescription(offer)
+
+    # 2) Attach shared tracks via relay (single decode → multi fan-out)
+    v = player.video and relay.subscribe(player.video)
+    a = player.audio and relay.subscribe(player.audio)
+    if a:
+        pc.addTrack(a)
+    if v:
+        pc.addTrack(v)
+
+    # 3) Create answer, munge SDP to request max bitrate, then set it
+    answer = await pc.createAnswer()
+    munged = _sdp_force_high_bitrate(answer.sdp, max_kbps=10000)  # 10 Mbps; raise if you like
+    await pc.setLocalDescription(RTCSessionDescription(munged, answer.type))
+
+    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
