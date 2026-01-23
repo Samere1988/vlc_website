@@ -1,33 +1,151 @@
 {% extends "security/layout.html" %}
 
 {% block content %}
-<div class="container" style="max-width: 500px; margin-top: 100px;">
-  <div class="card p-4 shadow-lg">
-    <h2 class="text-center mb-4">🔐 Login</h2>
+<style>
+    /* Force the page to match the Index style */
+    body {
+        background: linear-gradient(135deg, #1a1c2c 0%, #4a192c 100%);
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        color: white;
+        height: 100vh;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* Glassmorphism Card */
+    .login-card {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 40px;
+        border-radius: 15px;
+        width: 100%;
+        max-width: 400px;
+        box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5);
+        text-align: center;
+    }
+
+    .brand-title {
+        font-size: 2rem;
+        font-weight: bold;
+        margin-bottom: 10px;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        letter-spacing: 1px;
+    }
+
+    .login-subtitle {
+        color: #aaaaaa;
+        margin-bottom: 30px;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }
+
+    /* Custom Inputs */
+    .input-group {
+        margin-bottom: 20px;
+        text-align: left;
+    }
+
+    .login-input {
+        width: 100%;
+        padding: 12px 15px;
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        color: white;
+        font-size: 1rem;
+        outline: none;
+        transition: 0.3s;
+    }
+
+    .login-input:focus {
+        border-color: #ff4444; /* Your Accent Color */
+        background: rgba(0, 0, 0, 0.4);
+    }
+
+    .login-input::placeholder {
+        color: #888;
+    }
+
+    /* Custom Button */
+    .login-btn {
+        width: 100%;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.15);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: white;
+        font-size: 1rem;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-weight: bold;
+        margin-top: 10px;
+    }
+
+    .login-btn:hover {
+        background: rgba(255, 255, 255, 0.25);
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    }
+
+    /* Links */
+    .links {
+        margin-top: 20px;
+        font-size: 0.9rem;
+    }
+
+    .links a {
+        color: #aaaaaa;
+        text-decoration: none;
+        transition: 0.2s;
+        display: block;
+        margin-top: 8px;
+    }
+
+    .links a:hover {
+        color: white;
+        text-decoration: underline;
+    }
+
+    /* Error Alert */
+    .error-msg {
+        background: rgba(255, 68, 68, 0.2);
+        border: 1px solid #ff4444;
+        color: #ffcccc;
+        padding: 10px;
+        border-radius: 5px;
+        margin-top: 15px;
+        font-size: 0.9rem;
+    }
+</style>
+
+<div class="login-card">
+    <div class="brand-title">Peak Decline</div>
+    <div class="login-subtitle">Member Access</div>
 
     <form action="{{ url_for('login') }}" method="POST">
-      <div class="mb-3">
-        <input type="email" name="email" class="form-control" placeholder="Email" required>
-      </div>
+        <div class="input-group">
+            <input type="email" name="email" class="login-input" placeholder="Email Address" required autofocus>
+        </div>
 
-      <div class="mb-3">
-        <input type="password" name="password" class="form-control" placeholder="Password" required>
-      </div>
+        <div class="input-group">
+            <input type="password" name="password" class="login-input" placeholder="Password" required>
+        </div>
 
-      <button type="submit" class="btn btn-primary w-100">Login</button>
+        <button type="submit" class="login-btn">Login</button>
 
-      {% if error %}
-      <div class="alert alert-danger mt-3 text-center">{{ error }}</div>
-      {% endif %}
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
 
-      <div class="mt-3 text-center">
-        <a href="{{ url_for('forgot_password') }}">Forgot Password?</a>
-      </div>
-      <div class="mt-2 text-center">
-        <a href="{{ url_for('register') }}">No account? Register</a>
-      </div>
+        <div class="links">
+            <a href="{{ url_for('forgot_password') }}">Forgot Password?</a>
+            <a href="{{ url_for('register') }}">No account? <span style="color: #ff4444;">Register here</span></a>
+        </div>
     </form>
-  </div>
 </div>
-{% endblock %}
 
+{% endblock %}

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Peak Decline - Plex Link</title>
+
+  <!-- Video.js (LOAD ONCE) -->
+  <link href="https://vjs.zencdn.net/7.20.3/video-js.css" rel="stylesheet" />
+  <script src="https://vjs.zencdn.net/7.20.3/video.min.js"></script>
+
+  <!-- Socket.IO -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #1a1c2c 0%, #4a192c 100%);
+      --accent: #ff4444;
+      --text-main: #ffffff;
+    }
+    body {
+      font-family: sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      overflow: hidden;
+      margin: 0;
+    }
+
+    /* SIDEBAR */
+    .sidebar {
+      background: rgba(0,0,0,0.3);
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    .chat-header { padding: 20px; font-weight: bold; opacity: 0.7; }
+    #chat-messages { flex-grow: 1; overflow-y: auto; padding: 20px; font-size: 0.9rem; }
+    .chat-msg { margin-bottom: 8px; }
+    .chat-sys { color: #aaa; font-style: italic; margin-bottom: 8px; }
+    .chat-input-area {
+      padding: 15px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      border-radius: 4px;
+      border: none;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      outline: none;
+      box-sizing: border-box;
+    }
+
+    /* MAIN */
+    .main-content {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow-y: auto;
+    }
+
+    .video-container {
+      width: 100%;
+      max-width: 100%;
+      margin: 0 auto;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      background: #000;
+      position: relative;
+      aspect-ratio: 16 / 9;
+
+      /* NEW */
+      max-height: calc(100vh - 220px); /* header + controls */
+    }
+
+    /* Make the Video.js player fill the container (important) */
+    .video-js {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* OVERLAY FOR SYNC START */
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.85);
+      z-index: 99;
+      cursor: pointer;
+      color: white;
+      text-align: center;
+      padding: 20px;
+    }
+    .overlay h2 { margin-bottom: 10px; }
+    .overlay p { margin-top: 0; opacity: 0.8; }
+    .hidden { display: none !important; }
+
+    /* INPUT BAR */
+    .link-bar {
+      background: rgba(255,255,255,0.1);
+      padding: 20px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .link-bar input {
+      width: 70%;
+      max-width: 600px;
+      background: white;
+      color: black;
+      margin-right: 10px;
+    }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 4px;
+      border: none;
+      background: var(--accent);
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .btn:hover { opacity: 0.9; }
+    .status { margin-top: 10px; font-size: 0.9rem; opacity: 0.7; }
+
+    /* Video.js center play button */
+    .video-js .vjs-big-play-button {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Force control bar visible (helps if anything weird is hiding it) */
+    .video-js .vjs-control-bar {
+      display: flex !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="chat-header">ROOM CHAT</div>
+    <div id="chat-messages">
+      <div class="chat-sys">Welcome! Paste a Plex Link to start.</div>
+    </div>
+    <div class="chat-input-area">
+      <input type="text" id="chat-input" placeholder="Say something..." />
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main-content">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h1 style="margin:0;">Plex Watch Together</h1>
+      <a href="/" style="color:white; text-decoration:none; opacity:0.7;">Back to Home</a>
+    </div>
+
+    <div class="link-bar">
+      <h3 style="margin-top:0;">Start a Movie</h3>
+      <div style="display:flex; justify-content:center;">
+        <input type="text" id="plex-link" placeholder="Paste Plex URL (e.g. .../details?key=...)" />
+        <button class="btn" onclick="submitLink()">PLAY</button>
+      </div>
+      <div class="status" id="current-title">Waiting for selection...</div>
+    </div>
+
+    <div class="video-container">
+      <!-- JOIN OVERLAY (user-gesture to bypass autoplay restrictions) -->
+      <div id="loading-overlay" class="overlay hidden">
+        <h2 id="overlay-title">Stream in Progress</h2>
+        <p id="overlay-sub">Click to join at the correct time.</p>
+        <button class="btn" id="overlay-btn" type="button">CLICK TO JOIN</button>
+      </div>
+
+      <!-- IMPORTANT: only ONE player element, Video.js will enhance it -->
+      <video
+        id="cinema-screen"
+        class="video-js vjs-big-play-centered"
+        controls
+        preload="auto"
+        playsinline
+      ></video>
+    </div>
+  </main>
+
+  <script>
+    // -----------------------------
+    // GLOBALS
+    // -----------------------------
+    let iAmStarter = false;
+    let suppressEmit = false;
+    let lastAuthoritativeTime = 0;
+
+    const socket = io();
+
+    // Jinja2 user injection
+    const currentUser = "{{ user.username }}";
+
+    // --- SETUP PLAYER (INIT ONCE) ---
+    const player = videojs('cinema-screen', {
+      controls: true,
+      preload: 'auto',
+      fluid: false,               // we size via CSS container
+      liveui: true,
+      inactivityTimeout: 0,       // keep controls visible while debugging
+      html5: {
+        hls: { overrideNative: true }
+      }
+    });
+
+    let heartbeatInterval = null;
+    let mySocketId = null;
+
+    // Track last-known server time (used for join overlay)
+    let currentServerTime = 0;
+
+    // -----------------------------
+    // CONNECT
+    // -----------------------------
+    socket.on('connect', () => {
+      mySocketId = socket.id;
+      console.log("Connected. My ID:", mySocketId);
+
+      socket.emit('register_user', currentUser);
+      socket.emit('request_room_state');
+    });
+
+    // -----------------------------
+    // CHAT UI
+    // -----------------------------
+    socket.on('chat_message', (data) => {
+      const div = document.createElement('div');
+      div.className = data.user === 'System' ? 'chat-sys' : 'chat-msg';
+      div.innerHTML = `<strong>${escapeHtml(data.user)}:</strong> ${escapeHtml(data.text)}`;
+
+      const box = document.getElementById('chat-messages');
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    });
+
+    function addSystemMessage(text) {
+      const div = document.createElement('div');
+      div.className = 'chat-sys';
+      div.innerText = text;
+
+      const box = document.getElementById('chat-messages');
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (m) => ({
+        "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+      })[m]);
+    }
+
+    // -----------------------------
+    // OVERLAY
+    // -----------------------------
+    function showSyncOverlay(time, titleText = "Stream in Progress") {
+      const overlay = document.getElementById('loading-overlay');
+      const overlayTitle = document.getElementById('overlay-title');
+      const overlaySub = document.getElementById('overlay-sub');
+
+      overlayTitle.innerText = titleText;
+      overlaySub.innerText = "Click to join at the correct time.";
+
+      overlay.classList.remove('hidden');
+
+      overlay.onclick = () => joinAtTime(time);
+      document.getElementById('overlay-btn').onclick = (e) => {
+        e.stopPropagation();
+        joinAtTime(time);
+      };
+    }
+
+    function hideSyncOverlay() {
+      document.getElementById('loading-overlay').classList.add('hidden');
+    }
+
+    // IMPORTANT: join should NOT broadcast play/seek to everyone
+    function joinAtTime(time) {
+      const t = Number(time || 0);
+      console.log("Manual Join. Seeking to:", t);
+
+      suppressEmit = true;
+
+      player.muted(false);
+      player.currentTime(t);
+
+      player.play().then(() => {
+        hideSyncOverlay();
+        startHeartbeat();
+
+        setTimeout(() => {
+          suppressEmit = false;
+        }, 250);
+      }).catch((err) => {
+        suppressEmit = false;
+        console.warn("Play blocked:", err);
+        showSyncOverlay(t, "Click to Start Playback");
+      });
+    }
+
+    // -----------------------------
+    // CHANGE_MOVIE (FULL)
+    // -----------------------------
+    socket.on('change_movie', (data) => {
+      // Authoritative "seconds into movie" from server (for initial join)
+      currentServerTime = Number(data.startTime || 0);
+      lastAuthoritativeTime = currentServerTime;
+
+      document.getElementById('current-title').innerText =
+        "Playing: " + (data.title || "Unknown");
+
+      // Base stream URL from server (example: "/stream/plex/stream.m3u8")
+      const baseUrl = data.url;
+
+      // Make a fresh cache-busted URL each attempt
+      const makeBusted = () =>
+        baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'v=' + Date.now();
+
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+      // Wait until the stream URL actually responds OK (GET, no-store)
+      const waitForStream = async (attempts = 20) => {
+        for (let i = 0; i < attempts; i++) {
+          const bustedUrl = makeBusted();
+          try {
+            const res = await fetch(bustedUrl, { method: 'GET', cache: 'no-store' });
+            if (res.ok) return bustedUrl;
+          } catch (_) {}
+          await sleep(750);
+        }
+        return null;
+      };
+
+      (async () => {
+        const bustedUrl = await waitForStream(20);
+        if (!bustedUrl) {
+          addSystemMessage("Error: Stream took too long to generate.");
+          return;
+        }
+
+        // Load stream
+        player.pause();
+        player.src({ src: bustedUrl, type: 'application/x-mpegURL' });
+        player.load();
+
+        const onReady = async () => {
+          // Seek to authoritative time
+          suppressEmit = true;
+          player.currentTime(currentServerTime);
+          suppressEmit = false;
+
+          const roomIsPlaying = !!data.isPlaying;
+          const starterSid = data.starter_sid || data.starterSid || null;
+          iAmStarter = (starterSid && starterSid === mySocketId);
+
+          if (!roomIsPlaying) {
+            hideSyncOverlay();
+            addSystemMessage("Movie loaded and paused.");
+            return;
+          }
+
+          // Autoplay strategy:
+          // starter: sound (gesture likely allowed)
+          // joiner: muted autoplay (usually allowed)
+          try {
+            if (iAmStarter) player.muted(false);
+            else player.muted(true);
+
+            suppressEmit = true;
+            await player.play();
+            suppressEmit = false;
+
+            hideSyncOverlay();
+
+            // Heartbeat keeps join time accurate
+            startHeartbeat();
+
+            addSystemMessage(iAmStarter
+              ? "Started playback."
+              : "Joined stream (muted). You can unmute.");
+
+            // Tighten sync: re-seek shortly after playback starts
+            setTimeout(() => {
+              suppressEmit = true;
+              player.currentTime(currentServerTime);
+              setTimeout(() => { suppressEmit = false; }, 200);
+            }, 500);
+
+          } catch (err) {
+            suppressEmit = false;
+            console.warn("Autoplay blocked:", err);
+            showSyncOverlay(currentServerTime, iAmStarter ? "Click to Start Playback" : "Click to Join");
+            addSystemMessage("Click the overlay to start playback (browser blocked autoplay).");
+          }
+        };
+
+        // loadedmetadata is safer for HLS readiness
+        if (player.readyState() >= 1) onReady();
+        else player.one('loadedmetadata', onReady);
+      })();
+    });
+
+    // -----------------------------
+    // SYNC_STATE (FULL)
+    // -----------------------------
+    socket.on('sync_state', async (data) => {
+      if (data.from_sid && data.from_sid === mySocketId) return;
+
+      const target = Number(data.currentTime || 0);
+      const shouldPlay = !!data.isPlaying;
+
+      lastAuthoritativeTime = target;
+      currentServerTime = target;
+
+      const drift = Math.abs(player.currentTime() - target);
+      if (drift > 0.75) {
+        suppressEmit = true;
+        player.currentTime(target);
+        suppressEmit = false;
+      }
+
+      if (shouldPlay) {
+        try {
+          suppressEmit = true;
+          player.currentTime(target);
+
+          // Autoplay muted for non-gesture remote sync
+          player.muted(true);
+
+          await player.play();
+          suppressEmit = false;
+
+          hideSyncOverlay();
+
+          // Tighten sync after playback starts
+          setTimeout(() => {
+            suppressEmit = true;
+            player.currentTime(target);
+            setTimeout(() => { suppressEmit = false; }, 200);
+          }, 500);
+
+        } catch (err) {
+          suppressEmit = false;
+          console.warn("Muted autoplay blocked:", err);
+          showSyncOverlay(target, "Click to Join");
+        }
+      } else {
+        hideSyncOverlay();
+
+        suppressEmit = true;
+        player.pause();
+        suppressEmit = false;
+
+        stopHeartbeat();
+      }
+    });
+
+    // -----------------------------
+    // OUTGOING ACTIONS
+    // -----------------------------
+    function emitAction() {
+      socket.emit('player_update', {
+        isPlaying: !player.paused(),
+        currentTime: player.currentTime(),
+        from_sid: mySocketId
+      });
+    }
+
+    // Only broadcast REAL user actions (not remote/programmatic)
+    player.on('play', () => {
+      if (suppressEmit) return;
+      hideSyncOverlay();
+      emitAction();
+      startHeartbeat();
+    });
+
+    player.on('pause', () => {
+      if (suppressEmit) return;
+      emitAction();
+      stopHeartbeat();
+    });
+
+    player.on('seeked', () => {
+      if (suppressEmit) return;
+      emitAction();
+    });
+
+    // -----------------------------
+    // HEARTBEAT
+    // -----------------------------
+    function startHeartbeat() {
+      stopHeartbeat();
+      heartbeatInterval = setInterval(() => {
+        if (!player.paused()) {
+          socket.emit('heartbeat', {
+            isPlaying: true,
+            currentTime: player.currentTime()
+          });
+        }
+      }, 5000);
+    }
+
+    function stopHeartbeat() {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+
+    // -----------------------------
+    // UI HELPERS
+    // -----------------------------
+    function submitLink() {
+      const link = document.getElementById('plex-link').value.trim();
+      if (!link) return;
+
+      addSystemMessage("Sending link...");
+      socket.emit('request_movie_link', link);
+
+      document.getElementById('plex-link').value = "";
+    }
+
+    document.getElementById('chat-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        const msg = e.target.value.trim();
+        if (!msg) return;
+        socket.emit('chat_message', msg);
+        e.target.value = "";
+      }
+    });
+
+    // Playback error helper
+    player.on('error', () => {
+      const err = player.error();
+      console.warn("VideoJS error:", err);
+      addSystemMessage("Playback error. If stream is live, click overlay to re-join.");
+      showSyncOverlay(currentServerTime, "Playback Error");
+    });
+  </script>
+</body>
+</html>
